@@ -148,6 +148,7 @@ def main(args):
     utils.init_logging(args)
     
     # Initialize wandb if requested
+    wandb_available = False
     if args.use_wandb and wandb is not None:
         logging.info("Wandb logging requested - loading configuration...")
         
@@ -231,13 +232,27 @@ def main(args):
             logging.info(f"✓ Wandb project: {wandb.run.project}")
             if wandb.run.entity:
                 logging.info(f"✓ Wandb entity: {wandb.run.entity}")
+            
+            wandb_available = True
                 
         except Exception as e:
             logging.error(f"✗ Failed to initialize wandb: {str(e)}")
             logging.error("Continuing without wandb logging...")
-            wandb = None
+            wandb_available = False
     elif args.use_wandb and wandb is None:
-        logging.warning("wandb requested but not installed. Install with: pip install wandb")
+        logging.warning("✗ Wandb requested but not installed. Install with: pip install wandb")
+        logging.warning("✗ Training will continue WITHOUT wandb logging")
+    elif args.use_wandb and not wandb_available:
+        logging.warning("✗ Wandb was requested but initialization failed")
+        logging.warning("✗ Training will continue WITHOUT wandb logging")
+    elif not args.use_wandb:
+        logging.info("ℹ Wandb logging disabled (use --use-wandb to enable)")
+    
+    # Log final wandb status
+    if wandb_available:
+        logging.info("✓ Wandb logging is ACTIVE")
+    else:
+        logging.info("✗ Wandb logging is INACTIVE")
 
     # Load datasets
     def load_data(split):
@@ -257,8 +272,11 @@ def main(args):
     logging.info('Built a model with {:d} parameters'.format(total_params))
     
     # Update wandb config with total parameters
-    if args.use_wandb and wandb is not None:
+    if wandb_available:
         wandb.config.update({"total_params": total_params})
+        logging.info("✓ Model parameters logged to wandb")
+    elif args.use_wandb:
+        logging.warning("✗ Cannot log model parameters - wandb not available")
     
     criterion = nn.CrossEntropyLoss(ignore_index=src_tokenizer.pad_id(), reduction='sum')
 
@@ -284,6 +302,12 @@ def main(args):
     best_validate = float('inf')
 
     make_batch = utils.make_batch_input(device=device, pad=src_tokenizer.pad_id(), max_seq_len=args.max_seq_len)
+    
+    # Log wandb status before training starts
+    if args.use_wandb and wandb_available:
+        logging.info("✓ Starting training with wandb logging enabled")
+    elif args.use_wandb and not wandb_available:
+        logging.warning("⚠ Starting training - wandb was requested but is not working")
     
     for epoch in range(last_epoch + 1, args.max_epoch):
         train_loader = \
@@ -354,7 +378,7 @@ def main(args):
         model.train()
         
         # Log metrics to wandb
-        if args.use_wandb and wandb is not None:
+        if wandb_available:
             try:
                 # Training metrics
                 train_metrics = {
@@ -374,7 +398,8 @@ def main(args):
                 wandb.log(train_metrics)
                 logging.debug(f"Logged metrics to wandb for epoch {epoch}")
             except Exception as e:
-                logging.warning(f"Failed to log metrics to wandb: {str(e)}")
+                logging.warning(f"✗ Failed to log metrics to wandb for epoch {epoch}: {str(e)}")
+                logging.warning("✗ Continuing training without wandb logging for this epoch")
         
         # Save checkpoints
         if epoch % args.save_interval == 0:
@@ -413,7 +438,7 @@ def main(args):
     total_duration = training_end_time - training_start_time
     
     # Log final test results to wandb
-    if args.use_wandb and wandb is not None:
+    if wandb_available:
         try:
             logging.info("Logging final results to wandb...")
             final_metrics = {
@@ -448,10 +473,12 @@ def main(args):
             
         except Exception as e:
             logging.error(f"✗ Error logging final results to wandb: {str(e)}")
+            logging.error("✗ Final wandb logging failed - results may not appear in wandb dashboard")
             try:
                 wandb.finish()
+                logging.info("✓ Wandb session closed despite logging errors")
             except:
-                pass
+                logging.warning("✗ Failed to properly close wandb session")
     
     # Format duration in a human-readable way (variables already calculated above)
     hours = int(total_duration // 3600)
