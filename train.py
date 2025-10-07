@@ -223,7 +223,6 @@ def main(args):
             
             # Update the run name
             wandb.run.name = unique_run_name
-            wandb.run.save()
             
             # Log additional config
             wandb.config.update({
