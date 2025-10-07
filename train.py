@@ -152,7 +152,9 @@ def main(args):
         
         # Load wandb configuration
         wandb_config = load_wandb_config()
-        logging.info(f"Loaded wandb config keys: {list(wandb_config.keys())}")
+        # Only log non-sensitive config keys
+        safe_keys = [key for key in wandb_config.keys() if 'API_KEY' not in key and 'TOKEN' not in key.upper()]
+        logging.info(f"Loaded wandb config keys: {safe_keys}")
         
         # Set environment variables if provided
         if 'WANDB_API_KEY' in wandb_config:
