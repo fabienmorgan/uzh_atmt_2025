@@ -136,6 +136,9 @@ def main(args):
     """ Main training function. Trains the translation model over the course of several epochs, including dynamic
     learning rate adjustment and gradient clipping. """
     
+    # Training configuration
+    log_interval = 100  # Steps between wandb logging (also used as rolling window size)
+    
     # Record start time and log timestamp
     training_start_time = time.time()
     start_timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(training_start_time))
@@ -227,6 +230,7 @@ def main(args):
                 "seed": SEED,
                 "model_type": model_type,
                 "dataset_type": "tiny" if args.train_on_tiny else "full",
+                "log_interval": log_interval,
                 **device_info  # Add all device information
             })
             # Note: total_params will be added after model creation
@@ -318,8 +322,7 @@ def main(args):
     elif args.use_wandb and not wandb_available:
         logging.warning("⚠ Starting training - wandb was requested but is not working")
     
-    # Step-level logging configuration
-    log_every_n_steps = 100  # Log to wandb every N steps
+    # Initialize global step counter
     global_step = 0  # Track global step across all epochs
     
     for epoch in range(last_epoch + 1, args.max_epoch):
@@ -332,9 +335,6 @@ def main(args):
         stats['loss'] = 0
         stats['grad_norm'] = 0  # Keep grad_norm - useful for monitoring training stability
         stats['clip'] = 0
-        
-        # Rolling window for recent metrics (last N steps)
-        window_size = 100
         recent_losses = []
         recent_grad_norms = []
         
@@ -385,7 +385,7 @@ def main(args):
             recent_grad_norms.append(grad_norm)
             
             # Keep only last N steps
-            if len(recent_losses) > window_size:
+            if len(recent_losses) > log_interval:
                 recent_losses.pop(0)
                 recent_grad_norms.pop(0)
             
@@ -394,27 +394,23 @@ def main(args):
             rolling_avg_grad_norm = sum(recent_grad_norms) / len(recent_grad_norms)
             rolling_avg_perplexity = np.exp(rolling_avg_loss)
             
-            # Step-level wandb logging
-            if wandb_available and global_step % log_every_n_steps == 0:
+            # Step-level wandb logging (rolling averages only)
+            if wandb_available and global_step % log_interval == 0:
                 try:
                     step_metrics = {
-                        "train/step_loss": total_loss,
-                        "train/step_perplexity": step_perplexity,
-                        "train/grad_norm": grad_norm,
-                        "train/rolling_avg_loss": rolling_avg_loss,      # Add rolling average to wandb
+                        "train/rolling_avg_loss": rolling_avg_loss,
                         "train/rolling_avg_perplexity": rolling_avg_perplexity,
-                        "train/global_step": global_step,
-                        "train/epoch": epoch
+                        "train/rolling_avg_grad_norm": rolling_avg_grad_norm
                     }
                     wandb.log(step_metrics, step=global_step)
                 except Exception as e:
                     logging.warning(f"✗ Failed to log step metrics to wandb at step {global_step}: {str(e)}")
             
             progress_bar.set_postfix({
-                'loss': '{:.3f}'.format(total_loss),                    # Current step loss
-                f'avg_{window_size}': '{:.3f}'.format(rolling_avg_loss), # Rolling average loss
-                'ppl': '{:.1f}'.format(rolling_avg_perplexity),         # Rolling average perplexity  
-                'grad': '{:.2f}'.format(rolling_avg_grad_norm)},        # Rolling average grad norm
+                'loss': '{:.3f}'.format(total_loss),                      # Current step loss
+                f'avg_{log_interval}': '{:.3f}'.format(rolling_avg_loss), # Rolling average loss
+                'ppl': '{:.1f}'.format(rolling_avg_perplexity),           # Rolling average perplexity  
+                'grad': '{:.2f}'.format(rolling_avg_grad_norm)},          # Rolling average grad norm
                 refresh=False)
         # measure time to complete epoch (training only)
         epoch_time = time.perf_counter()- start_time
