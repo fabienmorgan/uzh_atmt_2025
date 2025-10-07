@@ -115,7 +115,8 @@ def get_args():
     parser.add_argument('--ignore-checkpoints', action='store_true', help='don\'t load any previous checkpoint')
     
     # Add wandb arguments
-    parser.add_argument('--use-wandb', action='store_true', help='enable Weights & Biases logging')
+    parser.add_argument('--use-wandb', action='store_true', default=True, help='enable Weights & Biases logging (default: True)')
+    parser.add_argument('--no-wandb', action='store_false', dest='use_wandb', help='disable Weights & Biases logging')
     parser.add_argument('--wandb-project', type=str, default='seq2seq-translation', help='wandb project name')
     parser.add_argument('--wandb-entity', type=str, default=None, help='wandb entity (username or team name)')
     parser.add_argument('--wandb-run-name', type=str, default=None, help='wandb run name')
