@@ -190,31 +190,37 @@ def main(args):
         else:
             tags.append("dataset_full")
         
-        # Create a descriptive run name if not provided
-        run_name = args.wandb_run_name
-        if run_name is None:
-            run_name = f"{model_type}_{args.arch}_{args.source_lang}-{args.target_lang}"
-            if args.train_on_tiny:
-                run_name += "_tiny"
-        
-        # Initialize wandb
+        # Initialize wandb first to get the auto-generated ID
         logging.info("Initializing wandb...")
         logging.info(f"Project: {project}")
         logging.info(f"Entity: {entity}")
-        logging.info(f"Run name: {run_name}")
         logging.info(f"Model type: {model_type}")
         logging.info(f"Tags: {tags}")
         
         try:
+            # Initialize wandb without a custom name first to get the auto-generated ID
             wandb.init(
                 project=project,
                 entity=entity,
-                name=run_name,
                 config=vars(args),
                 tags=tags,
                 notes=f"Training {args.arch} model ({model_type}) with {args.source_lang}->{args.target_lang}",
                 group=model_type  # This groups runs by model type in the wandb UI
             )
+            
+            # Now create a descriptive run name using the wandb ID
+            base_run_name = args.wandb_run_name
+            if base_run_name is None:
+                base_run_name = f"{model_type}_{args.arch}_{args.source_lang}-{args.target_lang}"
+                if args.train_on_tiny:
+                    base_run_name += "_tiny"
+            
+            # Add the wandb ID to make it unique
+            unique_run_name = f"{base_run_name}_{wandb.run.id}"
+            
+            # Update the run name
+            wandb.run.name = unique_run_name
+            wandb.run.save()
             
             # Log additional config
             wandb.config.update({
@@ -228,7 +234,7 @@ def main(args):
             logging.info("✓ Wandb initialized successfully!")
             logging.info(f"✓ Wandb run URL: {wandb.run.url}")
             logging.info(f"✓ Wandb run ID: {wandb.run.id}")
-            logging.info(f"✓ Wandb run name: {wandb.run.name}")
+            logging.info(f"✓ Wandb run name: {unique_run_name}")
             logging.info(f"✓ Wandb project: {wandb.run.project}")
             if wandb.run.entity:
                 logging.info(f"✓ Wandb entity: {wandb.run.entity}")
@@ -327,6 +333,11 @@ def main(args):
         stats['grad_norm'] = 0  # Keep grad_norm - useful for monitoring training stability
         stats['clip'] = 0
         
+        # Rolling window for recent metrics (last N steps)
+        window_size = 100
+        recent_losses = []
+        recent_grad_norms = []
+        
         # Display progress
         progress_bar = tqdm(train_loader, desc='| Epoch {:03d}'.format(epoch), leave=False, disable=False,
                             # update progressbar every 2 seconds
@@ -369,6 +380,20 @@ def main(args):
             stats['grad_norm'] += grad_norm
             stats['clip'] += 1 if grad_norm > args.clip_norm else 0
             
+            # Update rolling windows
+            recent_losses.append(total_loss)
+            recent_grad_norms.append(grad_norm)
+            
+            # Keep only last N steps
+            if len(recent_losses) > window_size:
+                recent_losses.pop(0)
+                recent_grad_norms.pop(0)
+            
+            # Calculate rolling averages
+            rolling_avg_loss = sum(recent_losses) / len(recent_losses)
+            rolling_avg_grad_norm = sum(recent_grad_norms) / len(recent_grad_norms)
+            rolling_avg_perplexity = np.exp(rolling_avg_loss)
+            
             # Step-level wandb logging
             if wandb_available and global_step % log_every_n_steps == 0:
                 try:
@@ -376,6 +401,8 @@ def main(args):
                         "train/step_loss": total_loss,
                         "train/step_perplexity": step_perplexity,
                         "train/grad_norm": grad_norm,
+                        "train/rolling_avg_loss": rolling_avg_loss,      # Add rolling average to wandb
+                        "train/rolling_avg_perplexity": rolling_avg_perplexity,
                         "train/global_step": global_step,
                         "train/epoch": epoch
                     }
@@ -384,10 +411,10 @@ def main(args):
                     logging.warning(f"✗ Failed to log step metrics to wandb at step {global_step}: {str(e)}")
             
             progress_bar.set_postfix({
-                'loss': '{:.4g}'.format(stats['loss'] / (i + 1)),
-                'perplexity': '{:.4g}'.format(np.exp(stats['loss'] / (i + 1))),
-                'grad_norm': '{:.4g}'.format(stats['grad_norm'] / (i + 1)),
-                'clip': '{:.4g}'.format(stats['clip'] / (i + 1))},
+                'loss': '{:.3f}'.format(total_loss),                    # Current step loss
+                f'avg_{window_size}': '{:.3f}'.format(rolling_avg_loss), # Rolling average loss
+                'ppl': '{:.1f}'.format(rolling_avg_perplexity),         # Rolling average perplexity  
+                'grad': '{:.2f}'.format(rolling_avg_grad_norm)},        # Rolling average grad norm
                 refresh=False)
         # measure time to complete epoch (training only)
         epoch_time = time.perf_counter()- start_time
