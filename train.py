@@ -219,11 +219,11 @@ def main(args):
             # Log additional config
             wandb.config.update({
                 "seed": SEED,
-                "total_params": None,  # Will be updated after model creation
                 "model_type": model_type,
                 "dataset_type": "tiny" if args.train_on_tiny else "full",
                 **device_info  # Add all device information
             })
+            # Note: total_params will be added after model creation
             
             logging.info("✓ Wandb initialized successfully!")
             logging.info(f"✓ Wandb run URL: {wandb.run.url}")
@@ -273,8 +273,11 @@ def main(args):
     
     # Update wandb config with total parameters
     if wandb_available:
-        wandb.config.update({"total_params": total_params})
-        logging.info("✓ Model parameters logged to wandb")
+        try:
+            wandb.config.update({"total_params": total_params}, allow_val_change=True)
+            logging.info("✓ Model parameters logged to wandb")
+        except Exception as e:
+            logging.warning(f"✗ Failed to log model parameters to wandb: {str(e)}")
     elif args.use_wandb:
         logging.warning("✗ Cannot log model parameters - wandb not available")
     
