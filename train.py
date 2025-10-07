@@ -321,8 +321,10 @@ def main(args):
     elif args.use_wandb and not wandb_available:
         logging.warning("⚠ Starting training - wandb was requested but is not working")
     
-    # Initialize global step counter
+    # Initialize global step counter and rolling windows
     global_step = 0  # Track global step across all epochs
+    recent_losses = []  # Rolling window persists across epochs
+    recent_grad_norms = []  # Rolling window persists across epochs
     
     for epoch in range(last_epoch + 1, args.max_epoch):
         train_loader = \
@@ -334,8 +336,6 @@ def main(args):
         stats['loss'] = 0
         stats['grad_norm'] = 0  # Keep grad_norm - useful for monitoring training stability
         stats['clip'] = 0
-        recent_losses = []
-        recent_grad_norms = []
         
         # Display progress
         progress_bar = tqdm(train_loader, desc='| Epoch {:03d}'.format(epoch), leave=False, disable=False,
@@ -372,16 +372,16 @@ def main(args):
             optimizer.zero_grad()
 
             # Update statistics for progress bar
-            total_loss = loss.item()
+            total_loss = float(loss.item())  # Ensure pure Python float
             step_perplexity = np.exp(total_loss)  # Calculate training perplexity
 
             stats['loss'] += total_loss
-            stats['grad_norm'] += grad_norm
+            stats['grad_norm'] += float(grad_norm)  # Ensure pure Python float
             stats['clip'] += 1 if grad_norm > args.clip_norm else 0
             
             # Update rolling windows
             recent_losses.append(total_loss)
-            recent_grad_norms.append(grad_norm)
+            recent_grad_norms.append(float(grad_norm))  # Ensure pure Python float
             
             # Keep only last N steps
             if len(recent_losses) > log_interval:
