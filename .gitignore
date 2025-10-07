@@ -23,3 +23,7 @@ toy_example/toy_example_output.en
 
 # unused
 seq2seq/embedding_saver.py
+
+# Environment variables
+.env
+wandb_config.txt

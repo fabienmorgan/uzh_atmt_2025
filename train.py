@@ -12,6 +12,13 @@ import sacrebleu
 import torch
 import torch.nn as nn
 
+# Wandb import with optional fallback
+try:
+    import wandb
+except ImportError:
+    wandb = None
+    logging.warning("wandb not installed. Install with: pip install wandb")
+
 import sys
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
@@ -21,6 +28,25 @@ from seq2seq.decode import decode
 from seq2seq.models import ARCH_MODEL_REGISTRY, ARCH_CONFIG_REGISTRY
 
 SEED = random.randint(1, 1_000_000_000)
+
+
+def load_wandb_config():
+    """Load wandb configuration from wandb_config.txt file."""
+    config = {}
+    config_file = os.path.join(os.path.dirname(__file__), 'wandb_config.txt')
+    
+    if os.path.exists(config_file):
+        with open(config_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
+                    if value and value != 'YOUR_WANDB_API_KEY':
+                        config[key] = value
+    
+    return config
 
 
 def get_args():
@@ -56,6 +82,12 @@ def get_args():
     parser.add_argument('--no-save', action='store_true', help='don\'t save models or checkpoints')
     parser.add_argument('--epoch-checkpoints', action='store_true', help='store all epoch checkpoints')
     parser.add_argument('--ignore-checkpoints', action='store_true', help='don\'t load any previous checkpoint')
+    
+    # Add wandb arguments
+    parser.add_argument('--use-wandb', action='store_true', help='enable Weights & Biases logging')
+    parser.add_argument('--wandb-project', type=str, default='seq2seq-translation', help='wandb project name')
+    parser.add_argument('--wandb-entity', type=str, default=None, help='wandb entity (username or team name)')
+    parser.add_argument('--wandb-run-name', type=str, default=None, help='wandb run name')
     # Parse twice as model arguments are not known the first time
     args, _ = parser.parse_known_args()
     model_parser = parser.add_argument_group(argument_default=argparse.SUPPRESS)
@@ -73,6 +105,39 @@ def main(args):
     torch.manual_seed(SEED)
 
     utils.init_logging(args)
+    
+    # Initialize wandb if requested
+    if args.use_wandb and wandb is not None:
+        # Load wandb configuration
+        wandb_config = load_wandb_config()
+        
+        # Set environment variables if provided
+        if 'WANDB_API_KEY' in wandb_config:
+            os.environ['WANDB_API_KEY'] = wandb_config['WANDB_API_KEY']
+        
+        # Use config values or command line arguments
+        project = wandb_config.get('WANDB_PROJECT', args.wandb_project)
+        entity = wandb_config.get('WANDB_ENTITY', args.wandb_entity)
+        
+        # Initialize wandb
+        wandb.init(
+            project=project,
+            entity=entity,
+            name=args.wandb_run_name,
+            config=vars(args),
+            tags=[f"arch_{args.arch}", f"lr_{args.lr}"],
+            notes=f"Training {args.arch} model with {args.source_lang}->{args.target_lang}"
+        )
+        
+        # Log additional config
+        wandb.config.update({
+            "seed": SEED,
+            "total_params": None,  # Will be updated after model creation
+        })
+        
+        logging.info(f"Wandb initialized: {wandb.run.url}")
+    elif args.use_wandb and wandb is None:
+        logging.warning("wandb requested but not installed. Install with: pip install wandb")
 
     # Load datasets
     def load_data(split):
@@ -88,7 +153,13 @@ def main(args):
     valid_dataset = load_data(split='valid')
 
     model = models.build_model(args, src_tokenizer, tgt_tokenizer)
-    logging.info('Built a model with {:d} parameters'.format(sum(p.numel() for p in model.parameters())))
+    total_params = sum(p.numel() for p in model.parameters())
+    logging.info('Built a model with {:d} parameters'.format(total_params))
+    
+    # Update wandb config with total parameters
+    if args.use_wandb and wandb is not None:
+        wandb.config.update({"total_params": total_params})
+    
     criterion = nn.CrossEntropyLoss(ignore_index=src_tokenizer.pad_id(), reduction='sum')
 
     # Move model to GPU if available
@@ -178,10 +249,28 @@ def main(args):
             value / len(progress_bar)) for key, value in stats.items())))
         logging.info(f'Time to complete epoch {epoch:03d} (training only): {epoch_time:.2f} seconds')
 
-
         # Calculate validation loss
-        valid_perplexity = validate(args, model, criterion, valid_dataset, epoch, batch_fn=make_batch, src_tokenizer=src_tokenizer, tgt_tokenizer=tgt_tokenizer)
+        valid_perplexity, valid_bleu = validate(args, model, criterion, valid_dataset, epoch, batch_fn=make_batch, src_tokenizer=src_tokenizer, tgt_tokenizer=tgt_tokenizer)
         model.train()
+        
+        # Log metrics to wandb
+        if args.use_wandb and wandb is not None:
+            # Training metrics
+            train_metrics = {
+                f"train/{key}": value / len(progress_bar) for key, value in stats.items()
+            }
+            train_metrics.update({
+                "train/epoch": epoch,
+                "train/epoch_time": epoch_time,
+                "valid/perplexity": valid_perplexity,
+                "valid/loss": np.log(valid_perplexity)  # Convert perplexity back to loss
+            })
+            
+            # Add BLEU score if available
+            if valid_bleu is not None:
+                train_metrics["valid/bleu"] = valid_bleu
+                
+            wandb.log(train_metrics)
         
         # Save checkpoints
         if epoch % args.save_interval == 0:
@@ -213,6 +302,29 @@ def main(args):
     )
 
     logging.info('Final Test Set Results: BLEU {:.2f}'.format(bleu_score))
+    
+    # Log final test results to wandb
+    if args.use_wandb and wandb is not None:
+        wandb.log({
+            "test/final_bleu": bleu_score,
+            "test/best_valid_perplexity": best_validate
+        })
+        
+        # Create a summary table with some example translations
+        if len(all_hypotheses) > 0:
+            # Log a few example translations as a table
+            examples = []
+            for i in range(min(10, len(all_hypotheses))):
+                examples.append([i, all_references[i], all_hypotheses[i]])
+            
+            wandb.log({
+                "test/examples": wandb.Table(
+                    columns=["Index", "Reference", "Hypothesis"],
+                    data=examples
+                )
+            })
+        
+        wandb.finish()
 
 
 def validate(args, model, criterion, valid_dataset, epoch,
@@ -292,7 +404,7 @@ def validate(args, model, criterion, valid_dataset, epoch,
         ('' if bleu_score is None else ' | BLEU {:.3f}'.format(bleu_score))
     )
 
-    return perplexity
+    return perplexity, bleu_score
     
 
 def evaluate(args, model, test_dataset,
