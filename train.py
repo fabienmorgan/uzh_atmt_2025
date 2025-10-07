@@ -334,7 +334,10 @@ def main(args):
         model.train()
         stats = OrderedDict()
         stats['loss'] = 0
-        stats['grad_norm'] = 0  # Keep grad_norm - useful for monitoring training stability
+        stats['lr'] = 0
+        stats['num_tokens'] = 0
+        stats['batch_size'] = 0
+        stats['grad_norm'] = 0
         stats['clip'] = 0
         
         # Display progress
@@ -371,26 +374,35 @@ def main(args):
             optimizer.step()
             optimizer.zero_grad()
 
-            # Update statistics for progress bar
-            total_loss = float(loss.item())  # Ensure pure Python float
-            step_perplexity = np.exp(total_loss)  # Calculate training perplexity
-
-            stats['loss'] += total_loss
-            stats['grad_norm'] += float(grad_norm)  # Ensure pure Python float
+            # Update statistics for progress bar (matching original logic)
+            total_loss, num_tokens, batch_size = loss.item(), sample['num_tokens'], len(sample['src_tokens'])
+            step_loss = float(loss.item())
+            step_grad_norm = float(grad_norm)
+            
+            # Update stats exactly like original
+            stats['loss'] += total_loss * len(sample['src_lengths']) / sample['num_tokens']
+            stats['lr'] += optimizer.param_groups[0]['lr'] 
+            stats['num_tokens'] += num_tokens / len(sample['src_tokens'])
+            stats['batch_size'] += batch_size
+            stats['grad_norm'] += grad_norm
             stats['clip'] += 1 if grad_norm > args.clip_norm else 0
             
-            # Update rolling windows
-            recent_losses.append(total_loss)
-            recent_grad_norms.append(float(grad_norm))  # Ensure pure Python float
+            # Rolling averages for wandb (keep your optimization)
+            if not (np.isnan(step_loss) or np.isinf(step_loss)):
+                recent_losses.append(step_loss)
             
-            # Keep only last N steps
+            if not (np.isnan(step_grad_norm) or np.isinf(step_grad_norm)):
+                recent_grad_norms.append(step_grad_norm)
+            
+            # Maintain window size - lightweight
             if len(recent_losses) > log_interval:
                 recent_losses.pop(0)
+            if len(recent_grad_norms) > log_interval:
                 recent_grad_norms.pop(0)
             
-            # Calculate rolling averages
-            rolling_avg_loss = sum(recent_losses) / len(recent_losses)
-            rolling_avg_grad_norm = sum(recent_grad_norms) / len(recent_grad_norms)
+            # Simple rolling averages - fast calculation
+            rolling_avg_loss = sum(recent_losses) / len(recent_losses) if recent_losses else step_loss
+            rolling_avg_grad_norm = sum(recent_grad_norms) / len(recent_grad_norms) if recent_grad_norms else step_grad_norm
             rolling_avg_perplexity = np.exp(rolling_avg_loss)
             
             # Step-level wandb logging (rolling averages only)
@@ -405,11 +417,13 @@ def main(args):
                 except Exception as e:
                     logging.warning(f"✗ Failed to log step metrics to wandb at step {global_step}: {str(e)}")
             
+            # Update progress bar (matching original format but with rolling averages)
             progress_bar.set_postfix({
-                'loss': '{:.3f}'.format(total_loss),                      # Current step loss
-                f'avg_{log_interval}': '{:.3f}'.format(rolling_avg_loss), # Rolling average loss
-                'ppl': '{:.1f}'.format(rolling_avg_perplexity),           # Rolling average perplexity  
-                'grad': '{:.2f}'.format(rolling_avg_grad_norm)},          # Rolling average grad norm
+                'loss': '{:.4g}'.format(stats['loss'] / (i + 1)),
+                'lr': '{:.4g}'.format(stats['lr'] / (i + 1)),
+                'tokens': '{:.4g}'.format(stats['num_tokens'] / (i + 1)),
+                'grad': '{:.4g}'.format(stats['grad_norm'] / (i + 1)),
+                f'avg_{log_interval}': '{:.3f}'.format(rolling_avg_loss)},
                 refresh=False)
         # measure time to complete epoch (training only)
         epoch_time = time.perf_counter()- start_time
@@ -422,7 +436,7 @@ def main(args):
         valid_perplexity, valid_bleu = validate(args, model, criterion, valid_dataset, epoch, batch_fn=make_batch, src_tokenizer=src_tokenizer, tgt_tokenizer=tgt_tokenizer)
         model.train()
         
-        # Calculate epoch-level training perplexity
+        # Calculate epoch-level training perplexity (matching original)
         epoch_train_loss = stats['loss'] / len(progress_bar)
         epoch_train_perplexity = np.exp(epoch_train_loss)
         
