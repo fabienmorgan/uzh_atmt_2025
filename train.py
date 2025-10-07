@@ -312,6 +312,10 @@ def main(args):
     elif args.use_wandb and not wandb_available:
         logging.warning("⚠ Starting training - wandb was requested but is not working")
     
+    # Step-level logging configuration
+    log_every_n_steps = 100  # Log to wandb every N steps
+    global_step = 0  # Track global step across all epochs
+    
     for epoch in range(last_epoch + 1, args.max_epoch):
         train_loader = \
             torch.utils.data.DataLoader(train_dataset, num_workers=1, collate_fn=train_dataset.collater,
@@ -320,10 +324,7 @@ def main(args):
         model.train()
         stats = OrderedDict()
         stats['loss'] = 0
-        stats['lr'] = 0
-        stats['num_tokens'] = 0
-        stats['batch_size'] = 0
-        stats['grad_norm'] = 0
+        stats['grad_norm'] = 0  # Keep grad_norm - useful for monitoring training stability
         stats['clip'] = 0
         
         # Display progress
@@ -334,6 +335,8 @@ def main(args):
         # Iterate over the training set
         start_time = time.perf_counter()
         for i, sample in enumerate(progress_bar):
+            global_step += 1
+            
             if args.cuda:
                 sample = utils.move_to_cuda(sample)
             if len(sample) == 0:
@@ -354,21 +357,38 @@ def main(args):
                 # import pdb;pdb.set_trace()
 
             loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_norm)  # Gradient norm - monitors training stability
             optimizer.step()
             optimizer.zero_grad()
 
             # Update statistics for progress bar
-            total_loss, num_tokens, batch_size = loss.item(), sample['num_tokens'], len(sample['src_tokens'])
+            total_loss = loss.item()
+            step_perplexity = np.exp(total_loss)  # Calculate training perplexity
 
-            stats['loss'] += total_loss * len(sample['src_lengths']) / sample['num_tokens']
-            stats['lr'] += optimizer.param_groups[0]['lr']
-            stats['num_tokens'] += num_tokens / len(sample['src_tokens'])
-            stats['batch_size'] += batch_size
+            stats['loss'] += total_loss
             stats['grad_norm'] += grad_norm
             stats['clip'] += 1 if grad_norm > args.clip_norm else 0
-            progress_bar.set_postfix({key: '{:.4g}'.format(value / (i + 1)) for key, value in stats.items()},
-                                     refresh=False)
+            
+            # Step-level wandb logging
+            if wandb_available and global_step % log_every_n_steps == 0:
+                try:
+                    step_metrics = {
+                        "train/step_loss": total_loss,
+                        "train/step_perplexity": step_perplexity,
+                        "train/grad_norm": grad_norm,
+                        "train/global_step": global_step,
+                        "train/epoch": epoch
+                    }
+                    wandb.log(step_metrics, step=global_step)
+                except Exception as e:
+                    logging.warning(f"✗ Failed to log step metrics to wandb at step {global_step}: {str(e)}")
+            
+            progress_bar.set_postfix({
+                'loss': '{:.4g}'.format(stats['loss'] / (i + 1)),
+                'perplexity': '{:.4g}'.format(np.exp(stats['loss'] / (i + 1))),
+                'grad_norm': '{:.4g}'.format(stats['grad_norm'] / (i + 1)),
+                'clip': '{:.4g}'.format(stats['clip'] / (i + 1))},
+                refresh=False)
         # measure time to complete epoch (training only)
         epoch_time = time.perf_counter()- start_time
         
@@ -380,28 +400,30 @@ def main(args):
         valid_perplexity, valid_bleu = validate(args, model, criterion, valid_dataset, epoch, batch_fn=make_batch, src_tokenizer=src_tokenizer, tgt_tokenizer=tgt_tokenizer)
         model.train()
         
-        # Log metrics to wandb
+        # Calculate epoch-level training perplexity
+        epoch_train_loss = stats['loss'] / len(progress_bar)
+        epoch_train_perplexity = np.exp(epoch_train_loss)
+        
+        # Log epoch-level metrics to wandb
         if wandb_available:
             try:
-                # Training metrics
-                train_metrics = {
-                    f"train/{key}": value / len(progress_bar) for key, value in stats.items()
-                }
-                train_metrics.update({
-                    "train/epoch": epoch,
-                    "train/epoch_time": epoch_time,
+                epoch_metrics = {
+                    "train/epoch_loss": epoch_train_loss,
+                    "train/epoch_perplexity": epoch_train_perplexity,
+                    "train/epoch_grad_norm": stats['grad_norm'] / len(progress_bar),
                     "valid/perplexity": valid_perplexity,
-                    "valid/loss": np.log(valid_perplexity)  # Convert perplexity back to loss
-                })
+                    "valid/loss": np.log(valid_perplexity),
+                    "epoch": epoch  # Keep epoch for x-axis grouping
+                }
                 
                 # Add BLEU score if available
                 if valid_bleu is not None:
-                    train_metrics["valid/bleu"] = valid_bleu
+                    epoch_metrics["valid/bleu"] = valid_bleu
                     
-                wandb.log(train_metrics)
-                logging.debug(f"Logged metrics to wandb for epoch {epoch}")
+                wandb.log(epoch_metrics, step=global_step)
+                logging.debug(f"Logged epoch metrics to wandb for epoch {epoch}")
             except Exception as e:
-                logging.warning(f"✗ Failed to log metrics to wandb for epoch {epoch}: {str(e)}")
+                logging.warning(f"✗ Failed to log epoch metrics to wandb for epoch {epoch}: {str(e)}")
                 logging.warning("✗ Continuing training without wandb logging for this epoch")
         
         # Save checkpoints
@@ -445,14 +467,25 @@ def main(args):
         try:
             logging.info("Logging final results to wandb...")
             final_metrics = {
-                "test/final_bleu": bleu_score,
-                "test/best_valid_perplexity": best_validate,
+                "final/test_bleu": bleu_score,  # Final BLEU score for plotting
+                "final/best_valid_perplexity": best_validate,
                 "training/total_duration_seconds": total_duration,
                 "training/total_duration_hours": total_duration / 3600,
-                "training/start_timestamp": start_timestamp,
-                "training/end_timestamp": end_timestamp
+                "training/start_time": training_start_time,  # Use unix timestamp
+                "training/end_time": training_end_time      # Use unix timestamp
             }
             wandb.log(final_metrics)
+            
+            # Add timestamp strings and other summary info to wandb summary
+            wandb.summary.update({
+                "start_timestamp_str": start_timestamp,
+                "end_timestamp_str": end_timestamp,
+                "total_epochs_trained": epoch + 1,
+                "early_stopped": bad_epochs >= args.patience,
+                "final_test_bleu": bleu_score,
+                "best_validation_perplexity": best_validate
+            })
+            
             logging.info("✓ Final metrics logged to wandb")
             
             # Create a summary table with some example translations
