@@ -40,14 +40,57 @@ python train.py --use-wandb [other arguments...]
 ### Additional wandb arguments:
 
 - `--wandb-project PROJECT_NAME`: Set project name (overrides config file)
-- `--wandb-entity ENTITY_NAME`: Set entity name (overrides config file)
+- `--wandb-entity ENTITY_NAME`: Set entity name (overrides config file)  
 - `--wandb-run-name RUN_NAME`: Set a specific run name
+- `--wandb-model-type {toy_example,assignment1,custom}`: Explicitly set model type for organization
 
 Example:
-
 ```bash
 python train.py --use-wandb --wandb-project "czech-english-translation" --wandb-run-name "transformer-baseline"
 ```
+
+## Differentiating Between Models
+
+### Using the Shell Scripts (Recommended)
+The easiest way to use wandb is through the provided shell scripts, which automatically set the correct model type:
+
+```bash
+# For toy example - just add --use-wandb
+# Edit toy_example.sh and add --use-wandb to the train.py command
+./toy_example.sh
+
+# For assignment1 - just add --use-wandb  
+# Edit assignment1.sh and add --use-wandb to the train.py command
+./assignment1.sh
+```
+
+Both scripts now include the `--wandb-model-type` argument:
+- `toy_example.sh` uses `--wandb-model-type toy_example`
+- `assignment1.sh` uses `--wandb-model-type assignment1`
+
+### Manual Training Commands
+You can still specify the model type manually:
+```bash
+# For toy example experiments
+python train.py --use-wandb --wandb-model-type toy_example
+
+# For assignment1 experiments  
+python train.py --use-wandb --wandb-model-type assignment1
+
+# For custom experiments
+python train.py --use-wandb --wandb-model-type custom
+```
+
+### Organization in wandb
+Models are organized using:
+- **Groups**: Runs are grouped by model type (`toy_example`, `assignment1`, `custom`)
+- **Tags**: Include `model_type_X`, `dataset_tiny/full`, `lang_pair_X-Y`, `arch_X`, `device_X`
+- **Run names**: Auto-generated as `{model_type}_{architecture}_{lang_pair}` if not specified
+- **Device info**: Automatically detects and logs GPU model (e.g., A100, RTX 4090), memory, device type
+
+Example run names:
+- `toy_example_transformer_cz-en_tiny`
+- `assignment1_transformer_fr-en`
 
 ## What gets logged
 
@@ -81,6 +124,14 @@ The integration logs the following metrics:
 - Model architecture details
 - Total number of parameters
 - Random seed used
+
+### Device information:
+
+- Device type (`cuda`, `cpu`, `mps`)
+- GPU model name (e.g., "NVIDIA A100-SXM4-40GB", "Tesla V100")
+- GPU memory in GB
+- Number of available GPUs
+- Current GPU device index
 
 ## Security
 

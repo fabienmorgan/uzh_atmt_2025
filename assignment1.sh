@@ -29,6 +29,7 @@ python preprocess.py \
     --tgt-model ./cz-en/tokenizers/en-bpe-8000.model
 
 # TRAIN
+# TRAIN (add --use-wandb to enable wandb logging)
 python train.py \
     --cuda \
     --data cz-en/data/prepared/ \
@@ -42,6 +43,7 @@ python train.py \
     --log-file cz-en/logs/train.log \
     --save-dir cz-en/checkpoints/ \
     --ignore-checkpoints \
+    --wandb-model-type assignment1 \
     --encoder-dropout 0.1 \
     --decoder-dropout 0.1 \
     --dim-embedding 256 \

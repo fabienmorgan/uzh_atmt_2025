@@ -49,6 +49,37 @@ def load_wandb_config():
     return config
 
 
+def get_device_info():
+    """Get device information for wandb logging."""
+    device_info = {}
+    
+    if torch.cuda.is_available():
+        device_info["device_type"] = "cuda"
+        device_info["device_count"] = torch.cuda.device_count()
+        device_info["current_device"] = torch.cuda.current_device()
+        
+        # Get GPU model name
+        try:
+            device_info["gpu_name"] = torch.cuda.get_device_name(torch.cuda.current_device())
+        except:
+            device_info["gpu_name"] = "unknown"
+        
+        # Get GPU memory info
+        try:
+            memory_total = torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory
+            device_info["gpu_memory_gb"] = round(memory_total / (1024**3), 1)
+        except:
+            device_info["gpu_memory_gb"] = "unknown"
+            
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        device_info["device_type"] = "mps"
+        device_info["gpu_name"] = "Apple Silicon"
+    else:
+        device_info["device_type"] = "cpu"
+        
+    return device_info
+
+
 def get_args():
     """ Defines training-specific hyper-parameters. """
     parser = argparse.ArgumentParser('Sequence to Sequence Model')
@@ -88,6 +119,8 @@ def get_args():
     parser.add_argument('--wandb-project', type=str, default='seq2seq-translation', help='wandb project name')
     parser.add_argument('--wandb-entity', type=str, default=None, help='wandb entity (username or team name)')
     parser.add_argument('--wandb-run-name', type=str, default=None, help='wandb run name')
+    parser.add_argument('--wandb-model-type', type=str, choices=['toy_example', 'assignment1', 'custom'], 
+                        default=None, help='explicitly set model type for wandb organization')
     # Parse twice as model arguments are not known the first time
     args, _ = parser.parse_known_args()
     model_parser = parser.add_argument_group(argument_default=argparse.SUPPRESS)
@@ -119,20 +152,52 @@ def main(args):
         project = wandb_config.get('WANDB_PROJECT', args.wandb_project)
         entity = wandb_config.get('WANDB_ENTITY', args.wandb_entity)
         
+        # Use model type from command line argument, default to "custom"
+        model_type = args.wandb_model_type or "custom"
+        
+        # Get device information
+        device_info = get_device_info()
+        
+        # Create enhanced tags
+        tags = [
+            f"arch_{args.arch}", 
+            f"lr_{args.lr}",
+            f"model_type_{model_type}",
+            f"lang_pair_{args.source_lang}-{args.target_lang}",
+            f"device_{device_info['device_type']}"
+        ]
+        
+        # Add dataset size tag
+        if args.train_on_tiny:
+            tags.append("dataset_tiny")
+        else:
+            tags.append("dataset_full")
+        
+        # Create a descriptive run name if not provided
+        run_name = args.wandb_run_name
+        if run_name is None:
+            run_name = f"{model_type}_{args.arch}_{args.source_lang}-{args.target_lang}"
+            if args.train_on_tiny:
+                run_name += "_tiny"
+        
         # Initialize wandb
         wandb.init(
             project=project,
             entity=entity,
-            name=args.wandb_run_name,
+            name=run_name,
             config=vars(args),
-            tags=[f"arch_{args.arch}", f"lr_{args.lr}"],
-            notes=f"Training {args.arch} model with {args.source_lang}->{args.target_lang}"
+            tags=tags,
+            notes=f"Training {args.arch} model ({model_type}) with {args.source_lang}->{args.target_lang}",
+            group=model_type  # This groups runs by model type in the wandb UI
         )
         
         # Log additional config
         wandb.config.update({
             "seed": SEED,
             "total_params": None,  # Will be updated after model creation
+            "model_type": model_type,
+            "dataset_type": "tiny" if args.train_on_tiny else "full",
+            **device_info  # Add all device information
         })
         
         logging.info(f"Wandb initialized: {wandb.run.url}")

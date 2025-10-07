@@ -33,6 +33,7 @@ python preprocess.py \
     --ignore-existing \
     --force-train
 
+# TRAIN (add --use-wandb to enable wandb logging)
 python train.py \
     --data toy_example/data/prepared/ \
     --src-tokenizer toy_example/tokenizers/cz-bpe-1000.model \
@@ -45,6 +46,7 @@ python train.py \
     --log-file toy_example/logs/train.log \
     --save-dir toy_example/checkpoints/ \
     --ignore-checkpoints \
+    --wandb-model-type toy_example \
     --encoder-dropout 0.1 \
     --decoder-dropout 0.1 \
     --dim-embedding 256 \
