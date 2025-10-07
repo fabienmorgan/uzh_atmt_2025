@@ -148,12 +148,18 @@ def main(args):
     
     # Initialize wandb if requested
     if args.use_wandb and wandb is not None:
+        logging.info("Wandb logging requested - loading configuration...")
+        
         # Load wandb configuration
         wandb_config = load_wandb_config()
+        logging.info(f"Loaded wandb config keys: {list(wandb_config.keys())}")
         
         # Set environment variables if provided
         if 'WANDB_API_KEY' in wandb_config:
             os.environ['WANDB_API_KEY'] = wandb_config['WANDB_API_KEY']
+            logging.info("✓ API key loaded from config file")
+        else:
+            logging.warning("⚠ No API key found in config file - make sure it's set in wandb_config.txt")
         
         # Use config values or command line arguments
         project = wandb_config.get('WANDB_PROJECT', args.wandb_project)
@@ -188,26 +194,45 @@ def main(args):
                 run_name += "_tiny"
         
         # Initialize wandb
-        wandb.init(
-            project=project,
-            entity=entity,
-            name=run_name,
-            config=vars(args),
-            tags=tags,
-            notes=f"Training {args.arch} model ({model_type}) with {args.source_lang}->{args.target_lang}",
-            group=model_type  # This groups runs by model type in the wandb UI
-        )
+        logging.info("Initializing wandb...")
+        logging.info(f"Project: {project}")
+        logging.info(f"Entity: {entity}")
+        logging.info(f"Run name: {run_name}")
+        logging.info(f"Model type: {model_type}")
+        logging.info(f"Tags: {tags}")
         
-        # Log additional config
-        wandb.config.update({
-            "seed": SEED,
-            "total_params": None,  # Will be updated after model creation
-            "model_type": model_type,
-            "dataset_type": "tiny" if args.train_on_tiny else "full",
-            **device_info  # Add all device information
-        })
-        
-        logging.info(f"Wandb initialized: {wandb.run.url}")
+        try:
+            wandb.init(
+                project=project,
+                entity=entity,
+                name=run_name,
+                config=vars(args),
+                tags=tags,
+                notes=f"Training {args.arch} model ({model_type}) with {args.source_lang}->{args.target_lang}",
+                group=model_type  # This groups runs by model type in the wandb UI
+            )
+            
+            # Log additional config
+            wandb.config.update({
+                "seed": SEED,
+                "total_params": None,  # Will be updated after model creation
+                "model_type": model_type,
+                "dataset_type": "tiny" if args.train_on_tiny else "full",
+                **device_info  # Add all device information
+            })
+            
+            logging.info("✓ Wandb initialized successfully!")
+            logging.info(f"✓ Wandb run URL: {wandb.run.url}")
+            logging.info(f"✓ Wandb run ID: {wandb.run.id}")
+            logging.info(f"✓ Wandb run name: {wandb.run.name}")
+            logging.info(f"✓ Wandb project: {wandb.run.project}")
+            if wandb.run.entity:
+                logging.info(f"✓ Wandb entity: {wandb.run.entity}")
+                
+        except Exception as e:
+            logging.error(f"✗ Failed to initialize wandb: {str(e)}")
+            logging.error("Continuing without wandb logging...")
+            wandb = None
     elif args.use_wandb and wandb is None:
         logging.warning("wandb requested but not installed. Install with: pip install wandb")
 
@@ -327,22 +352,26 @@ def main(args):
         
         # Log metrics to wandb
         if args.use_wandb and wandb is not None:
-            # Training metrics
-            train_metrics = {
-                f"train/{key}": value / len(progress_bar) for key, value in stats.items()
-            }
-            train_metrics.update({
-                "train/epoch": epoch,
-                "train/epoch_time": epoch_time,
-                "valid/perplexity": valid_perplexity,
-                "valid/loss": np.log(valid_perplexity)  # Convert perplexity back to loss
-            })
-            
-            # Add BLEU score if available
-            if valid_bleu is not None:
-                train_metrics["valid/bleu"] = valid_bleu
+            try:
+                # Training metrics
+                train_metrics = {
+                    f"train/{key}": value / len(progress_bar) for key, value in stats.items()
+                }
+                train_metrics.update({
+                    "train/epoch": epoch,
+                    "train/epoch_time": epoch_time,
+                    "valid/perplexity": valid_perplexity,
+                    "valid/loss": np.log(valid_perplexity)  # Convert perplexity back to loss
+                })
                 
-            wandb.log(train_metrics)
+                # Add BLEU score if available
+                if valid_bleu is not None:
+                    train_metrics["valid/bleu"] = valid_bleu
+                    
+                wandb.log(train_metrics)
+                logging.debug(f"Logged metrics to wandb for epoch {epoch}")
+            except Exception as e:
+                logging.warning(f"Failed to log metrics to wandb: {str(e)}")
         
         # Save checkpoints
         if epoch % args.save_interval == 0:
@@ -375,39 +404,53 @@ def main(args):
 
     logging.info('Final Test Set Results: BLEU {:.2f}'.format(bleu_score))
     
-    # Log final test results to wandb
-    if args.use_wandb and wandb is not None:
-        wandb.log({
-            "test/final_bleu": bleu_score,
-            "test/best_valid_perplexity": best_validate,
-            "training/total_duration_seconds": total_duration,
-            "training/total_duration_hours": total_duration / 3600,
-            "training/start_timestamp": start_timestamp,
-            "training/end_timestamp": end_timestamp
-        })
-        
-        # Create a summary table with some example translations
-        if len(all_hypotheses) > 0:
-            # Log a few example translations as a table
-            examples = []
-            for i in range(min(10, len(all_hypotheses))):
-                examples.append([i, all_references[i], all_hypotheses[i]])
-            
-            wandb.log({
-                "test/examples": wandb.Table(
-                    columns=["Index", "Reference", "Hypothesis"],
-                    data=examples
-                )
-            })
-        
-        wandb.finish()
-    
-    # Calculate and log total training time
+    # Calculate and log total training time BEFORE wandb logging
     training_end_time = time.time()
     end_timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(training_end_time))
     total_duration = training_end_time - training_start_time
     
-    # Format duration in a human-readable way
+    # Log final test results to wandb
+    if args.use_wandb and wandb is not None:
+        try:
+            logging.info("Logging final results to wandb...")
+            final_metrics = {
+                "test/final_bleu": bleu_score,
+                "test/best_valid_perplexity": best_validate,
+                "training/total_duration_seconds": total_duration,
+                "training/total_duration_hours": total_duration / 3600,
+                "training/start_timestamp": start_timestamp,
+                "training/end_timestamp": end_timestamp
+            }
+            wandb.log(final_metrics)
+            logging.info("✓ Final metrics logged to wandb")
+            
+            # Create a summary table with some example translations
+            if len(all_hypotheses) > 0:
+                logging.info("Creating example translations table...")
+                examples = []
+                for i in range(min(10, len(all_hypotheses))):
+                    examples.append([i, all_references[i], all_hypotheses[i]])
+                
+                wandb.log({
+                    "test/examples": wandb.Table(
+                        columns=["Index", "Reference", "Hypothesis"],
+                        data=examples
+                    )
+                })
+                logging.info("✓ Example translations table logged to wandb")
+            
+            logging.info("Finishing wandb run...")
+            wandb.finish()
+            logging.info("✓ Wandb run finished successfully")
+            
+        except Exception as e:
+            logging.error(f"✗ Error logging final results to wandb: {str(e)}")
+            try:
+                wandb.finish()
+            except:
+                pass
+    
+    # Format duration in a human-readable way (variables already calculated above)
     hours = int(total_duration // 3600)
     minutes = int((total_duration % 3600) // 60)
     seconds = int(total_duration % 60)
