@@ -27,3 +27,6 @@ seq2seq/embedding_saver.py
 # Environment variables
 .env
 wandb_config.txt
+
+# Output files
+*.out
