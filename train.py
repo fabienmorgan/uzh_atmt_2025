@@ -376,20 +376,22 @@ def main(args):
 
             # Update statistics for progress bar (matching original logic)
             total_loss, num_tokens, batch_size = loss.item(), sample['num_tokens'], len(sample['src_tokens'])
-            step_loss = float(loss.item())
+            
+            # Calculate weighted loss for consistency (as used in original)
+            weighted_step_loss = total_loss * len(sample['src_lengths']) / sample['num_tokens']
             step_grad_norm = float(grad_norm)
             
             # Update stats exactly like original
-            stats['loss'] += total_loss * len(sample['src_lengths']) / sample['num_tokens']
+            stats['loss'] += weighted_step_loss
             stats['lr'] += optimizer.param_groups[0]['lr'] 
             stats['num_tokens'] += num_tokens / len(sample['src_tokens'])
             stats['batch_size'] += batch_size
             stats['grad_norm'] += grad_norm
             stats['clip'] += 1 if grad_norm > args.clip_norm else 0
             
-            # Rolling averages for wandb (keep your optimization)
-            if not (np.isnan(step_loss) or np.isinf(step_loss)):
-                recent_losses.append(step_loss)
+            # Rolling averages for wandb - use SAME weighted loss for consistency
+            if not (np.isnan(weighted_step_loss) or np.isinf(weighted_step_loss)):
+                recent_losses.append(weighted_step_loss)
             
             if not (np.isnan(step_grad_norm) or np.isinf(step_grad_norm)):
                 recent_grad_norms.append(step_grad_norm)
@@ -401,7 +403,7 @@ def main(args):
                 recent_grad_norms.pop(0)
             
             # Simple rolling averages - fast calculation
-            rolling_avg_loss = sum(recent_losses) / len(recent_losses) if recent_losses else step_loss
+            rolling_avg_loss = sum(recent_losses) / len(recent_losses) if recent_losses else weighted_step_loss
             rolling_avg_grad_norm = sum(recent_grad_norms) / len(recent_grad_norms) if recent_grad_norms else step_grad_norm
             rolling_avg_perplexity = np.exp(rolling_avg_loss)
             
