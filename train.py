@@ -134,6 +134,13 @@ def get_args():
 def main(args):
     """ Main training function. Trains the translation model over the course of several epochs, including dynamic
     learning rate adjustment and gradient clipping. """
+    
+    # Record start time and log timestamp
+    training_start_time = time.time()
+    start_timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(training_start_time))
+    logging.info('=' * 60)
+    logging.info(f'Training started at: {start_timestamp}')
+    logging.info('=' * 60)
     logging.info('Commencing training!')
     torch.manual_seed(SEED)
 
@@ -372,7 +379,11 @@ def main(args):
     if args.use_wandb and wandb is not None:
         wandb.log({
             "test/final_bleu": bleu_score,
-            "test/best_valid_perplexity": best_validate
+            "test/best_valid_perplexity": best_validate,
+            "training/total_duration_seconds": total_duration,
+            "training/total_duration_hours": total_duration / 3600,
+            "training/start_timestamp": start_timestamp,
+            "training/end_timestamp": end_timestamp
         })
         
         # Create a summary table with some example translations
@@ -390,6 +401,21 @@ def main(args):
             })
         
         wandb.finish()
+    
+    # Calculate and log total training time
+    training_end_time = time.time()
+    end_timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(training_end_time))
+    total_duration = training_end_time - training_start_time
+    
+    # Format duration in a human-readable way
+    hours = int(total_duration // 3600)
+    minutes = int((total_duration % 3600) // 60)
+    seconds = int(total_duration % 60)
+    
+    logging.info('=' * 60)
+    logging.info(f'Training completed at: {end_timestamp}')
+    logging.info(f'Total training time: {hours:02d}h:{minutes:02d}m:{seconds:02d}s ({total_duration:.2f} seconds)')
+    logging.info('=' * 60)
 
 
 def validate(args, model, criterion, valid_dataset, epoch,
