@@ -49,11 +49,11 @@ def load_wandb_config():
     return config
 
 
-def get_device_info():
-    """Get device information for wandb logging."""
+def get_device_info(use_cuda=False):
+    """Get device information for wandb logging based on actual usage."""
     device_info = {}
     
-    if torch.cuda.is_available():
+    if use_cuda and torch.cuda.is_available():
         device_info["device_type"] = "cuda"
         device_info["device_count"] = torch.cuda.device_count()
         device_info["current_device"] = torch.cuda.current_device()
@@ -71,7 +71,7 @@ def get_device_info():
         except:
             device_info["gpu_memory_gb"] = "unknown"
             
-    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+    elif use_cuda and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
         device_info["device_type"] = "mps"
         device_info["gpu_name"] = "Apple Silicon"
     else:
@@ -176,7 +176,7 @@ def main(args):
         model_type = args.wandb_model_type or "custom"
         
         # Get device information
-        device_info = get_device_info()
+        device_info = get_device_info(use_cuda=args.cuda)
         
         # Create enhanced tags
         tags = [
