@@ -64,8 +64,13 @@ def main(args):
     #                                     max_seq_len=args.max_len)
 
     # Read input sentences
-    with open(args.input, encoding="utf-8") as f:
-        src_lines = [line.strip() for line in f if line.strip()]
+    try:
+        with open(args.input, encoding="utf-8") as f:
+            src_lines = [line.strip() for line in f if line.strip()]
+    except UnicodeDecodeError:
+        # Try with latin-1 encoding if utf-8 fails
+        with open(args.input, encoding="latin-1") as f:
+            src_lines = [line.strip() for line in f if line.strip()]
 
     # Encode input sentences
     src_encoded = [torch.tensor(src_tokenizer.Encode(line, out_type=int)) for line in src_lines]
